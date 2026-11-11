@@ -1,0 +1,185 @@
+name: Build Neon Descent
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - name: Android64
+            os: ubuntu-latest
+            target: Android64
+          - name: Android32
+            os: ubuntu-latest
+            target: Android32
+    name: ${{ matrix.config.name }}
+    runs-on: ${{ matrix.config.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Crea i file della mod
+        run: |
+          mkdir -p src
+          cat > mod.json <<'NEON_EOF'
+          {
+            "geode": "4.0.0",
+            "gd": { "win": "2.2074", "android": "2.2074" },
+            "id": "elmo.neon-descent",
+            "name": "Neon Descent",
+            "version": "v1.0.0",
+            "developer": "Elmo",
+            "description": "Livello 23 (Insane) + modalita sandbox: non tocca il tuo salvataggio."
+          }
+          NEON_EOF
+          cat > CMakeLists.txt <<'NEON_EOF'
+          cmake_minimum_required(VERSION 3.21)
+          set(CMAKE_CXX_STANDARD 20)
+          project(NeonDescent VERSION 1.0.0)
+          file(GLOB SOURCES src/*.cpp)
+          add_library(${PROJECT_NAME} SHARED ${SOURCES})
+          if (NOT DEFINED ENV{GEODE_SDK})
+              message(FATAL_ERROR "Imposta la variabile GEODE_SDK")
+          endif()
+          add_subdirectory($ENV{GEODE_SDK} ${CMAKE_CURRENT_BINARY_DIR}/geode)
+          setup_geode_mod(${PROJECT_NAME})
+          NEON_EOF
+          cat > src/main.cpp <<'NEON_EOF'
+          #include <Geode/Geode.hpp>
+          #include <Geode/modify/AppDelegate.hpp>
+          #include <Geode/modify/LevelSelectLayer.hpp>
+          #include "Level.hpp"
+          using namespace geode::prelude;
+
+          // SANDBOX: finche' la mod e' attiva nessun salvataggio viene scritto su disco.
+          // Disattivi la mod = i tuoi .dat originali sono intatti.
+          class $modify(SandboxDelegate, AppDelegate) {
+              void trySaveGame(bool p0) {
+                  log::info("Neon Descent sandbox: salvataggio bloccato");
+              }
+          };
+
+          class $modify(NeonSelect, LevelSelectLayer) {
+              bool init(int page) {
+                  if (!LevelSelectLayer::init(page)) return false;
+
+                  auto lvl = GJGameLevel::create();
+                  lvl->m_levelName = "Neon Descent";
+                  lvl->m_levelID = -23;
+                  lvl->m_stars = 10;
+                  lvl->m_difficulty = GJDifficulty::Insane;
+                  lvl->m_levelType = GJLevelType::Local;
+                  lvl->m_songID = 0; // metti un ID Newgrounds tuo
+                  LevelBuilder b;
+                  lvl->m_levelString = ZipUtils::compressString(b.build(), false, 0);
+
+                  auto menu = CCMenu::create();
+                  auto spr = ButtonSprite::create("23 Neon Descent");
+                  auto btn = CCMenuItemSpriteExtra::create(spr, this, menu_selector(NeonSelect::onNeon));
+                  btn->setUserObject("lvl", lvl);
+                  menu->addChild(btn);
+                  auto win = CCDirector::get()->getWinSize();
+                  menu->setPosition(win.width / 2, 40);
+                  this->addChild(menu, 10);
+                  return true;
+              }
+              void onNeon(CCObject* sender) {
+                  auto lvl = static_cast<GJGameLevel*>(static_cast<CCNode*>(sender)->getUserObject("lvl"));
+                  CCDirector::get()->pushScene(CCTransitionFade::create(0.5f, PlayLayer::scene(lvl, false, false)));
+              }
+          };
+          NEON_EOF
+          cat > src/Level.hpp <<'NEON_EOF'
+          #pragma once
+          #include <Geode/Geode.hpp>
+          #include <fmt/format.h>
+
+          // Generatore di "Neon Descent": 5 fasi, ognuna con colore e decorazioni proprie.
+          struct LevelBuilder {
+              std::string s;
+              void obj(int id, float x, float y, float rot = 0, float scale = 1) {
+                  s += fmt::format("1,{},2,{},3,{}", id, x, y);
+                  if (rot != 0) s += fmt::format(",6,{}", rot);
+                  if (scale != 1) s += fmt::format(",32,{}", scale);
+                  s += ";";
+              }
+              // Color trigger (id 899). canale 1000 = BG, 1 = ground/oggetti
+              void color(float x, int ch, int r, int g, int b, float dur = 0.8f) {
+                  s += fmt::format("1,899,2,{},3,300,7,{},8,{},9,{},10,{},23,{};", x, r, g, b, dur, ch);
+              }
+              // Decorazione: blocchi luminosi a pavimento e soffitto
+              void deco(float x0, float x1, float step, int ceilingY = 300) {
+                  for (float x = x0; x < x1; x += step) {
+                      obj(1, x, 0);
+                      obj(1, x, ceilingY);
+                      obj(211, x, 30, 0, 0.5f);      // tile decorativo
+                      obj(211, x, ceilingY - 30, 180, 0.5f);
+                  }
+              }
+              std::string build() {
+                  s = "kS38,1_40_2_125_3_200_11_255_12_255_13_255_4_-1_6_1000_7_1_15_1_18_0_8_1|,"
+                      "kA13,0,kA15,0,kA16,0,kA14,,kA6,0,kA7,0,kA17,0,kA18,0,kS39,0,kA2,0,kA3,0,kA8,0,"
+                      "kA4,2,kA9,0,kA10,0,kA11,0;";
+
+                  // FASE 1: CUBE (ciano)
+                  color(0, 1000, 0, 20, 40);  color(0, 1, 0, 255, 255);
+                  deco(0, 4000, 120);
+                  for (int i = 0; i < 20; i++) {
+                      obj(8, 600 + i * 150, 15);
+                      if (i % 4 == 3) obj(35, 560 + i * 150, 15);       // yellow pad
+                      if (i % 5 == 4) obj(8, 640 + i * 150, 15);        // doppio spike
+                  }
+
+                  // FASE 2: SHIP (magenta)
+                  color(3900, 1000, 40, 0, 40); color(3900, 1, 255, 0, 200);
+                  obj(13, 4000, 105);
+                  for (int i = 0; i < 40; i++) {
+                      obj(1, 4200 + i * 30, 15 + (i % 8) * 30);
+                      obj(1, 4200 + i * 30, 300 - (i % 8) * 30);
+                  }
+                  deco(4000, 5500, 120);
+
+                  // FASE 3: WAVE (verde acido)
+                  color(5500, 1000, 0, 40, 0); color(5500, 1, 100, 255, 0);
+                  obj(660, 5600, 105);
+                  for (int i = 0; i < 30; i++) obj(8, 5800 + i * 60, 45 + (i % 2) * 150, (i % 2) * 180);
+                  deco(5500, 7500, 120);
+
+                  // FASE 4: BALL + UFO (arancio)
+                  color(7700, 1000, 40, 15, 0); color(7700, 1, 255, 140, 0);
+                  obj(47, 7800, 105);
+                  for (int i = 0; i < 12; i++) { obj(8, 8000 + i * 120, 15); obj(8, 8060 + i * 120, 300, 180); }
+                  obj(111, 9000, 105);
+                  for (int i = 0; i < 12; i++) obj(8, 9200 + i * 130, 15 + (i % 3) * 90);
+                  deco(7700, 10000, 120);
+
+                  // FASE 5: DROP FINALE (bianco/viola, velocita' + gravita')
+                  color(9950, 1000, 15, 0, 40); color(9950, 1, 255, 255, 255, 0.3f);
+                  obj(203, 10000, 105);          // speed portal
+                  obj(11, 10300, 105);           // gravity portal
+                  for (int i = 0; i < 25; i++) obj(8, 10500 + i * 90, i % 2 ? 15 : 300, i % 2 ? 0 : 180);
+                  obj(12, 12900, 105);           // gravity normale
+                  return s;
+              }
+          };
+          NEON_EOF
+      - name: Build the mod
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          bindings: geode-sdk/bindings
+          bindings-ref: main
+          combine: true
+          target: ${{ matrix.config.target }}
+
+  package:
+    name: Package builds
+    runs-on: ubuntu-latest
+    needs: ['build']
+    steps:
+      - uses: geode-sdk/build-geode-mod/combine@main
+        id: build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Build Output
+          path: ${{ steps.build.outputs.build-output }}
